@@ -2,7 +2,7 @@
 
 Terminal-based 3D icosahedron renderer with real-time rotation and shading
 
-[Demo](demo.gif)
+![Demo](./demo.gif)
 
 
 ## 🎯 Features
