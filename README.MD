@@ -9,8 +9,10 @@ Terminal-based 3D icosahedron renderer with real-time rotation and shading
 
 - **3D Rotation**: 3-axis rotation using rotation matrices
 - **Perspective Projection**: Camera-based depth rendering
+- **Backface Culling**: 2D screen-space winding order (CCW = front)
 - **Z-Buffer**: Proper depth testing for overlapping faces
-- **Flat Shading**: Lambert reflection model with diagonal lighting
+- **Flat Shading**: Lambert reflection + depth-based brightness blending
+- **Silhouette Edges**: Boundary detection between front/back faces
 - **Wireframe Overlay**: Edge rendering with Bresenham's line algorithm
 
 ## 🛠️ Technical Stack
@@ -41,13 +43,13 @@ Press `Ctrl+C` to exit.
 ### Rendering Pipeline
 1. **Rotation**: Apply 3-axis rotation matrices (X, Y, Z)
 2. **Projection**: Perspective projection with auto-scaled FOV
-3. **Rasterization**: 
-   - Barycentric coordinates for triangle filling
-   - Z-buffer for depth testing
-   - Normal vector calculation for lighting
-4. **Shading**: Lambert reflection model with 70-character ASCII gradient
+3. **Backface Culling**: 2D signed area of projected triangle — CCW → front, CW → back
+4. **Rasterization**: Barycentric coordinates for triangle filling with Z-buffer depth testing
+5. **Shading**: Lambert reflection (70%) + depth score (30%) blended over 70-char ASCII gradient
+6. **Edge Pass**: Silhouette edges (`*`) and interior edges (`-`) drawn on top
 
 ### Key Algorithms
+- **2D Winding Order (CCW/CW)**: Screen-space backface culling — perspective-accurate, no normal approximation
 - **Bresenham's Line Algorithm**: Efficient edge rendering
 - **Barycentric Coordinates**: Point-in-triangle test & Z-value interpolation
 - **Z-Buffer**: Per-pixel depth comparison for correct occlusion
@@ -70,17 +72,19 @@ shade_chars = " .'`^\",:;Il..."    # 음영 문자 세트 (70개)
 - ✅ Z-Buffer 기반 깊이 판정
 - ✅ 무게중심 좌표계 (Barycentric Coordinates)
 - ✅ Lambert 반사 모델을 이용한 음영 처리
+- ✅ 2D 스크린 공간 와인딩 기반 백페이스 컬링
 - ✅ 터미널 기반 실시간 렌더링 최적화
 
 ## 📂 Code Structure
 ```
 icosahedron.py
-├── Geometry Definition      # vertices, faces
-├── Rotation Matrices        # rotation_matrix_x/y/z
+├── Constants               # phi, CAMERA_DIST, CIRCUM_R, light_dir, shade_chars
+├── Geometry Definition     # vertices, faces (CCW winding)
+├── Rotation Matrices       # rotation_matrix_x/y/z
 ├── Projection              # project (3D → 2D)
-├── Rasterization           # fill_triangle, barycentric
-├── Lighting & Shading      # normal calculation, Lambert model
-└── Main Loop               # rendering pipeline
+├── Rasterization           # fill_triangle (barycentric + Z-buffer)
+├── Backface Culling        # is_face_visible (2D signed area)
+└── Main Loop               # visibility cache → fill → edge pass → output
 ```
 
 ## 🤝 Acknowledgments
