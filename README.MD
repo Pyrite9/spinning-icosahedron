@@ -57,7 +57,7 @@ Press `Ctrl+C` to exit.
 코드 상단에서 조정 가능한 설정:
 ```python
 CAMERA_DIST = 5                    # 카메라 거리
-light_dir = np.array([-1, 1, 1])   # 광원 방향 (왼쪽 위 앞)
+light_dir = np.array([1, 1, 1]) / np.sqrt(3)  # 광원 방향 (오른쪽 위 앞, 정규화)
 shade_chars = " .'`^\",:;Il..."    # 음영 문자 세트 (70개)
 ```
 
@@ -86,6 +86,8 @@ icosahedron.py
 ## 🤝 Acknowledgments
 
 Claude Opus 4.6의 도움을 받아 학습 목적으로 제작되었습니다.
+
+코드 개선(백페이스 컬링, NumPy 벡터화, 터미널 리사이즈 대응 등)은 [Claude Code](https://claude.ai/code)를 활용해 진행했습니다.
 
 ## 📝 License
 

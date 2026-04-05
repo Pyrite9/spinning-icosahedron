@@ -1,18 +1,23 @@
-import numpy as np
-import time
+import sys
 import os
+import time
+import numpy as np
 
 # ──────────────────────────────────────────────
 # 화면 설정
-# 터미널 크기를 자동 감지. 감지 실패 시 기본값 사용.
 # ──────────────────────────────────────────────
-try:
-    term_size = os.get_terminal_size()
-    WIDTH = term_size.columns
-    HEIGHT = term_size.lines - 1  # 프롬프트 줄 하나 빼기
-except OSError:
-    WIDTH = 80
-    HEIGHT = 40
+
+def get_terminal_size():
+    """터미널 크기와 투영 배율을 반환. 감지 실패 시 기본값 사용."""
+    try:
+        term_size = os.get_terminal_size()
+        w = term_size.columns
+        h = term_size.lines - 1  # 프롬프트 줄 하나 빼기
+    except OSError:
+        w, h = 80, 40
+    phi_val = (1 + np.sqrt(5)) / 2
+    scale = h * 0.375 * CAMERA_DIST / (phi_val * 0.5)
+    return w, h, scale
 
 # ──────────────────────────────────────────────
 # 정이십면체 꼭짓점 정의
@@ -80,11 +85,7 @@ light_dir = np.array([1, 1, 1]) / np.sqrt(3)
 # 카메라까지의 거리 (Z축 오프셋)
 CAMERA_DIST = 5
 
-# 투영 배율 — 화면 높이 기준으로 이십면체가 약 75%를 차지하도록 계산.
-# 정이십면체 꼭짓점의 최대 반경 = phi ≈ 1.618
-# 화면에 투영될 크기 = PROJ_SCALE * phi / CAMERA_DIST * 0.5 (종횡비 보정)
-# 이것이 HEIGHT * 0.375 (= 75% / 2, 상하 대칭)가 되도록 역산.
-PROJ_SCALE = HEIGHT * 0.375 * CAMERA_DIST / ((1 + np.sqrt(5)) / 2 * 0.5)
+WIDTH, HEIGHT, PROJ_SCALE = get_terminal_size()
 
 
 # ──────────────────────────────────────────────
@@ -189,24 +190,33 @@ def barycentric(px, py, x0, y0, x1, y1, x2, y2):
 def is_face_visible(v0, v1, v2):
     """
     면 가시성 판별.
-    Z-buffer가 앞/뒤 면 겹침을 처리하므로,
-    카메라 뒤로 완전히 넘어간 경우만 걸러냄.
+
+    1. 세 꼭짓점이 모두 카메라 뒤에 있으면 스킵.
+    2. 백페이스 컬링: 면의 법선이 카메라 반대 방향(+Z)을 향하면 스킵.
+       카메라는 -Z 방향을 바라보므로, 법선의 Z 성분이 음수이면 뒷면.
     """
-    # 세 꼭짓점 모두 카메라 뒤에 있으면 스킵
     if v0[2] + CAMERA_DIST <= 0 and v1[2] + CAMERA_DIST <= 0 and v2[2] + CAMERA_DIST <= 0:
         return False
+
+    # 면 법선의 Z 성분으로 카메라 향함 여부 판별
+    edge1 = v1 - v0
+    edge2 = v2 - v0
+    normal = np.cross(edge1, edge2)
+    if normal[2] <= 0:
+        return False
+
     return True
 
 
 def fill_triangle(frame, z_buffer, v0, v1, v2):
     """
-    삼각형 래스터라이저 (flat shading + Z-buffer).
-    
+    삼각형 래스터라이저 (flat shading + Z-buffer, NumPy 벡터화).
+
     1. 세 꼭짓점을 2D로 투영
     2. 면의 법선으로 광원과의 각도 계산 → 밝기 결정
-    3. Bounding box 내 각 픽셀에 대해:
-       - 무게중심 좌표로 삼각형 내부 판별
-       - Z-buffer 비교 후 더 가까우면 문자 갱신
+    3. Bounding box 내 픽셀 전체를 NumPy 배열로 한 번에 처리:
+       - 무게중심 좌표 벡터 연산으로 삼각형 내부 마스킹
+       - Z-buffer 비교 후 더 가까운 픽셀만 문자 갱신
     """
     # 2D 투영
     x0, y0 = project(v0)
@@ -222,6 +232,9 @@ def fill_triangle(frame, z_buffer, v0, v1, v2):
     min_y = max(0, min(y0, y1, y2))
     max_y = min(HEIGHT - 1, max(y0, y1, y2))
 
+    if min_x > max_x or min_y > max_y:
+        return
+
     # 면 법선 벡터 계산 → 라이팅
     edge1 = v1 - v0
     edge2 = v2 - v0
@@ -232,8 +245,6 @@ def fill_triangle(frame, z_buffer, v0, v1, v2):
     normal = normal / norm_len
 
     # 법선이 항상 바깥쪽(카메라 쪽)을 향하도록 보정.
-    # 정이십면체는 원점 중심이므로, 면의 중심점과 법선의 내적이
-    # 양수여야 바깥 방향. 음수면 뒤집어줌.
     center = (v0 + v1 + v2) / 3
     if np.dot(normal, center) < 0:
         normal = -normal
@@ -243,20 +254,30 @@ def fill_triangle(frame, z_buffer, v0, v1, v2):
     char_idx = int(brightness * (len(shade_chars) - 1))
     char = shade_chars[char_idx]
 
-    # 각 픽셀 래스터라이즈
-    for y in range(min_y, max_y + 1):
-        for x in range(min_x, max_x + 1):
-            w0, w1, w2 = barycentric(x, y, x0, y0, x1, y1, x2, y2)
+    # ── NumPy 벡터화 래스터라이즈 ──
+    # bounding box 내 모든 픽셀 좌표를 한 번에 생성
+    ys, xs = np.mgrid[min_y:max_y + 1, min_x:max_x + 1]
 
-            # 삼각형 내부인지 확인
-            if w0 >= 0 and w1 >= 0 and w2 >= 0:
-                # 무게중심 좌표로 Z값 보간
-                z = w0 * v0[2] + w1 * v1[2] + w2 * v2[2]
+    # 무게중심 좌표 벡터 연산
+    denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+    if abs(denom) < 1e-10:
+        return
 
-                # Z-buffer 테스트: 더 가까운 면이면 갱신
-                if z < z_buffer[y][x]:
-                    z_buffer[y][x] = z
-                    frame[y][x] = char
+    w0 = ((y1 - y2) * (xs - x2) + (x2 - x1) * (ys - y2)) / denom
+    w1 = ((y2 - y0) * (xs - x2) + (x0 - x2) * (ys - y2)) / denom
+    w2 = 1 - w0 - w1
+
+    # 삼각형 내부 마스크
+    inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+
+    # Z값 보간
+    z_vals = w0 * v0[2] + w1 * v1[2] + w2 * v2[2]
+
+    # Z-buffer 비교: 내부이고 더 가까운 픽셀만 갱신
+    update_mask = inside & (z_vals < z_buffer[min_y:max_y + 1, min_x:max_x + 1])
+
+    z_buffer[min_y:max_y + 1, min_x:max_x + 1][update_mask] = z_vals[update_mask]
+    frame[min_y:max_y + 1, min_x:max_x + 1][update_mask] = char
 
 
 # ──────────────────────────────────────────────
@@ -269,8 +290,6 @@ def fill_triangle(frame, z_buffer, v0, v1, v2):
 # \033[?25l : 커서 숨기기
 # \033[?25h : 커서 보이기
 
-import sys
-
 # 회전 각도 (라디안)
 angle_x = 0.0
 angle_y = 0.0
@@ -282,6 +301,9 @@ sys.stdout.flush()
 
 try:
     while True:
+        # 터미널 크기 갱신 (리사이즈 대응)
+        WIDTH, HEIGHT, PROJ_SCALE = get_terminal_size()
+
         # 커서를 좌상단으로 이동 (화면을 지우지 않음 → 깜빡임 없음)
         sys.stdout.write('\033[H')
 
@@ -290,8 +312,8 @@ try:
         rotated = vertices @ R.T  # 모든 꼭짓점에 회전 적용
 
         # ── 2. 프레임 버퍼 & Z-버퍼 초기화 ──
-        frame = [[' '] * WIDTH for _ in range(HEIGHT)]
-        z_buffer = [[float('inf')] * WIDTH for _ in range(HEIGHT)]
+        frame = np.full((HEIGHT, WIDTH), ' ', dtype='U1')
+        z_buffer = np.full((HEIGHT, WIDTH), np.inf)
 
         # ── 3. 면 채우기 (Z-buffer + flat shading) ──
         for i, j, k in faces:
@@ -323,7 +345,7 @@ try:
 
         # ── 5. 화면 출력 ──
         # 전체 프레임을 하나의 문자열로 만들어 한 번에 write (깜빡임 방지)
-        output = '\n'.join(''.join(row) for row in frame)
+        output = '\n'.join(''.join(row) for row in frame.tolist())
         sys.stdout.write(output)
         sys.stdout.flush()
 
